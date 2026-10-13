@@ -1,5 +1,8 @@
 ﻿using ScottPlot;
+using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -88,11 +91,21 @@ namespace cs_mxdc_exp
 
         private void button1_Click(object sender, EventArgs e)
         {
-            //Bitmap bmp = CaptureWindowByTitle("冒险岛怀旧服");
-            Bitmap bmp = CaptureWindowByTitle("launcher3.0");
+            Bitmap bmp = CaptureWindowByTitle("冒险岛怀旧服");
+            // Bitmap bmp = CaptureWindowByTitle("launcher3.0");
             if (bmp != null)
             {
                 pictureBox1.Image = bmp;
+
+                string imgPath_full = Path.Combine(
+                    Directory.GetCurrentDirectory(),
+                        $"full_{DateTime.Now:yyyyMMdd_HHmmss}.png");
+                bmp.Save(imgPath_full, System.Drawing.Imaging.ImageFormat.Png);
+
+                string res_price;
+
+                bool ocr_suc_price = WechatOCR.call_wechat_ocr(imgPath_full, out res_price);
+                Log($"OCR识别结果：{res_price}; 识别成功={ocr_suc_price}", LogLevel.Info);
             }
         }
 
@@ -154,12 +167,13 @@ namespace cs_mxdc_exp
             Log($"窗口大小：width={windowRect.Width};height={windowRect.Height}");
             Log($"窗口左上角坐标：x={windowRect.Left};y={windowRect.Top}");
 
-            var bmp = new Bitmap(windowRect.Width, windowRect.Height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            // var bmp = new Bitmap(windowRect.Width, windowRect.Height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            var bmp = new Bitmap(120, 17);
             using (var graphics = Graphics.FromImage(bmp))
             {
                 graphics.CopyFromScreen(
-                    windowRect.Left,
-                    windowRect.Top,
+                    windowRect.Left + 1050,
+                    windowRect.Top + 953,
                     0,
                     0,
                     bmp.Size,
@@ -178,11 +192,55 @@ namespace cs_mxdc_exp
                 Log("未能获取窗口截图，无法读取经验值！", LogLevel.Warning);
                 return -1;
             }
+            bmp= InvertImage(bmp);
             pictureBox1.Image = bmp;
+            string imgPath = Path.Combine(
+            Directory.GetCurrentDirectory(),
+                $"full_{DateTime.Now:yyyyMMdd_HHmmss}.png");
+                    bmp.Save(imgPath, System.Drawing.Imaging.ImageFormat.Png);
 
-            
-            
-            return 0;
+
+            string res_price;
+
+            bool ocr_suc_price = WechatOCR.call_wechat_ocr(imgPath, out res_price);
+            Log($"OCR识别结果：{res_price}; 识别成功={ocr_suc_price}", LogLevel.Info);
+            try
+            {
+                using (JsonDocument doc = JsonDocument.Parse(res_price))
+                {
+                    JsonElement root = doc.RootElement;
+
+                    // 检查是否存在 ocr_response 数组且不为空
+                    if (root.TryGetProperty("ocr_response", out JsonElement ocrArray) && ocrArray.GetArrayLength() > 0)
+                    {
+                        // 提取数组中第一个元素的 text 字段
+                        string text = "";
+                        for(int i = 0;i< ocrArray.GetArrayLength(); i++)
+                        {
+                            text = $"{text}{ocrArray[i].GetProperty("text").GetString().Trim()}";
+                        }
+
+                        string result = string.Join("", Regex.Matches(text, @"\d"));
+
+
+                        if (result.Length > 0 && int.TryParse(result, out int ret))
+                        {
+                            return ret;
+                        }
+                        else
+                        {
+                            Log("OCR识别结果无效或无法解析为整数！", LogLevel.Warning);
+                            return -1;
+                        }
+
+                    }
+                    return -1;
+                }
+            }
+            catch (Exception ex)
+            {
+                return -1;
+            }
         }
 
 
@@ -192,6 +250,7 @@ namespace cs_mxdc_exp
             // 采集当前经验，加入list中；
             long nowTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             int value = (int)((nowTime % 100000) * 100 + Random.Shared.Next(0, 80));
+            value = getExp();
             Log($"当前时间：{nowTime}, 经验值：{value}", LogLevel.Info);
 
             // 取最后一个，然后计算跟这次的差值，计算speed
@@ -364,6 +423,39 @@ namespace cs_mxdc_exp
             // 切换 TopMost
             this.TopMost = !this.TopMost;
             button_top.Text = this.TopMost ? "T" : "-";
+        }
+
+        public static Bitmap InvertImage(Bitmap original)
+        {
+            // 创建一个同尺寸的新位图
+            Bitmap inverted = new Bitmap(original.Width, original.Height);
+
+            // 定义反色颜色矩阵
+            // R' = 1 - R, G' = 1 - G, B' = 1 - B
+            ColorMatrix colorMatrix = new ColorMatrix(new float[][]
+            {
+            new float[] {-1,  0,  0,  0,  0},
+            new float[] { 0, -1,  0,  0,  0},
+            new float[] { 0,  0, -1,  0,  0},
+            new float[] { 0,  0,  0,  1,  0}, // Alpha 通道不变
+            new float[] { 1,  1,  1,  0,  1}  // 颜色偏移量（平移1，实现 1 - 颜色值）
+            });
+
+            using (ImageAttributes attributes = new ImageAttributes())
+            {
+                attributes.SetColorMatrix(colorMatrix);
+
+                using (Graphics g = Graphics.FromImage(inverted))
+                {
+                    g.DrawImage(original,
+                        new Rectangle(0, 0, original.Width, original.Height),
+                        0, 0, original.Width, original.Height,
+                        GraphicsUnit.Pixel,
+                        attributes);
+                }
+            }
+
+            return inverted;
         }
     }
 
