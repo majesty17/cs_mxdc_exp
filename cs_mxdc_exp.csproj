@@ -14,4 +14,13 @@
     <PackageReference Include="ScottPlot.WinForms" Version="5.1.59" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="wcocr\wcocr.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="WeChatOCR\**">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>

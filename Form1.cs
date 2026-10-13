@@ -1,5 +1,8 @@
-﻿using System.Runtime.InteropServices;
-using ScottPlot;
+﻿using ScottPlot;
+using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows.Forms;
 using static cs_mxdc_exp.Form1;
 using Color = System.Drawing.Color;
 
@@ -8,12 +11,20 @@ namespace cs_mxdc_exp
     public partial class Form1 : Form
     {
         private string app_name = "MXCD经验统计";
+
+        // 采集间隔,秒
+        public const int INTVAL_SEC = 5;
         // 采集状态标志
         private bool isRunning = false;
         // 采集数据列表，key为时间戳，value为经验值
-        private Dictionary<long, int> dataList = new Dictionary<long,int >();
+        private Dictionary<long, DataPoint> dataList = new Dictionary<long, DataPoint>();
         // 开始时间戳
         long startTime;
+
+
+        // 创建一个时间间隔为 5 秒的定时器
+        PeriodicTimer timer = new PeriodicTimer(TimeSpan.FromSeconds(INTVAL_SEC));
+        CancellationTokenSource cts; // = new CancellationTokenSource();
 
 
         private enum LogLevel
@@ -159,23 +170,80 @@ namespace cs_mxdc_exp
 
         }
 
+        private int getExp()
+        {
+            Bitmap bmp = CaptureWindowByTitle("冒险岛怀旧服");
+            if(bmp == null)
+            {
+                Log("未能获取窗口截图，无法读取经验值！", LogLevel.Warning);
+                return -1;
+            }
+            pictureBox1.Image = bmp;
+
+            
+            
+            return 0;
+        }
+
 
         // 定时器主循环事件，每5秒采集一次经验数据
-        private void timer_main_Tick(object sender, EventArgs e)
+        private async Task DoTaskAsync()
         {
             // 采集当前经验，加入list中；
-            Log("采集当前经验数据...", LogLevel.Info);
             long nowTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            int value = (int)(nowTime % 100000 + Random.Shared.Next(10, 80));
-            Log($"当前时间戳：{nowTime}, 当前经验值：{value}", LogLevel.Info);
+            int value = (int)((nowTime % 100000) * 100 + Random.Shared.Next(0, 80));
+            Log($"当前时间：{nowTime}, 经验值：{value}", LogLevel.Info);
+
+            // 取最后一个，然后计算跟这次的差值，计算speed
+            int lastvalue = value;  // 默认当前值,也就是第一个增速为0
+            if (dataList.Count > 0)
+            {
+                lastvalue = dataList.Values.Last().Value;
+            }
 
 
-            dataList.Add(nowTime, value); // 这里的100是示例经验值，实际应替换为采集到的经验值
-            drawChart();
+            dataList.Add(nowTime, new DataPoint(value, nowTime, lastvalue, INTVAL_SEC));
+
+            // 窗口内的数据点数
+            int all_len = dataList.Count;
+            int time_win_len = ((int)numericUpDown_timeval.Value) * 60 / INTVAL_SEC;
+            int real_len = Math.Min(all_len, time_win_len);
+
+
+            long[] xs = new long[real_len];
+            string[] x_str = new string[real_len];  // x轴文字
+            int[] ys = new int[real_len];   // 经验净值
+            double[] y2s = new double[real_len];  // 经验实时增速(万/小时)
+
+            // 取出最近的 real_len 个数据点
+            for (int i = 0; i < real_len; i++)
+            {
+                long key = dataList.Keys.ElementAt(all_len - real_len + i);
+                xs[i] = key;
+                ys[i] = dataList[key].Value;
+                x_str[i] = dataList[key].TimeStr;
+                y2s[i] = dataList[key].Speed;
+            }
+
+            // 
+            double avg_speed_all = ((double)(dataList.Values.Last().Value - dataList.Values.First().Value)) / dataList.Count / INTVAL_SEC * 3600 / 10000.0;
+            double avg_speed_win = (ys[real_len - 1] - ys[0]) / real_len / INTVAL_SEC * 3600 / 10000.0;
+            double rt_speed = (y2s.Last());
+            int exp_incr_all = dataList.Values.Last().Value - dataList.Values.First().Value;
+            int exp_incr_winwin = ys[real_len - 1] - ys[0];
+
+
+            // 更新两个label
+            label_avg_all.Text = $"经验增速(总): {avg_speed_all:F2} 万/小时; 增量(总): {exp_incr_all}";
+            label_avg_win.Text = $"经验增速(窗): {avg_speed_win:F2} 万/小时; 增量(窗): {exp_incr_winwin}";
+            label_rt.Text = $"实时增速: {rt_speed:F2} 万/小时";
+
+            // 绘制曲线图
+            drawChart(x_str, xs, ys, y2s);
         }
 
         // 按钮点击事件，开始或停止采集
-        private void button_run_Click(object sender, EventArgs e)
+        async private void button_run_Click(object sender, EventArgs e)
         {
             if (this.isRunning)
             {
@@ -196,22 +264,31 @@ namespace cs_mxdc_exp
             if (this.isRunning)
             {
                 dataList.Clear();
-                timer_main.Interval = 10000;
+                //timer_main.Interval = 10000;
                 timer_refresh_clock.Interval = 200;
                 startTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
                 Log($"采集开始时间戳：{startTime}", LogLevel.Info);
-                timer_main.Start();
+                //timer_main.Start();
                 timer_refresh_clock.Start();
+                try
+                {
+                    cts = new CancellationTokenSource();
+                    while (await timer.WaitForNextTickAsync(cts.Token))
+                    {
+                        await DoTaskAsync();
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    // Log("采集任务已取消。", LogLevel.Info);
+                }
+
             }
             else
             {
-                timer_main.Stop();
+                cts.Cancel();
                 timer_refresh_clock.Stop();
             }
-
-
-
-
         }
 
         // 刷新运行时间显示
@@ -227,55 +304,80 @@ namespace cs_mxdc_exp
         // 窗体关闭事件，停止定时器
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
+            isRunning = false;
+            if(cts != null) 
+                cts.Cancel();
             timer_refresh_clock.Stop();
-            timer_main.Stop();
         }
 
         // 绘制经验曲线图
-        private void drawChart()
+        private void drawChart(string[] x_str, long[] x, int[] y, double[] y2)
         {
-            // 把datalist里的值画在formsPlot_main里
-            formsPlot_main.Plot.Clear();
-            if (dataList.Count > 0)
+            int len = x.Length;
+            if (len <= 0 || y.Length != len)
             {
-                double[] xs = new double[dataList.Count];
-                string[] x_str= new string[dataList.Count];
-                double[] ys = new double[dataList.Count];
-
-                int i = 0;
-                foreach (var kvp in dataList)
-                {
-                    DateTimeOffset dateTimeOffset = DateTimeOffset.FromUnixTimeSeconds(kvp.Key).ToLocalTime();
-                    x_str[i] = dateTimeOffset.ToString("HH:mm:ss");
-                    xs[i] = kvp.Key; 
-                    ys[i] = kvp.Value;
-                    i++;
-                }
-
-
-
-                // 计算平均值并绘制水平线
-                double avg = ys.Average();
-                var avg_lineline = formsPlot_main.Plot.Add.HorizontalLine(avg);
-                avg_lineline.Color= ScottPlot.Color.FromColor(Color.Purple);
-                avg_lineline.LinePattern = LinePattern.Dashed;
-                avg_lineline.LineWidth = 2;
-
-                // 设置x轴的刻度密度
-                var tickGen = new ScottPlot.TickGenerators.NumericAutomatic();
-                tickGen.TargetTickCount = 8;
-                formsPlot_main.Plot.Axes.Bottom.TickGenerator = tickGen;
-
-                
-                // 设置X轴为时间戳对应的字符串
-                formsPlot_main.Plot.Axes.Bottom.SetTicks(xs, x_str);
-                formsPlot_main.Plot.Add.Scatter(xs, ys);
-
-
-
-                // 设置图表标题和轴标签
-                formsPlot_main.Plot.Axes.AutoScale();                formsPlot_main.Refresh();
+                Log("绘制曲线图失败：x和y数组长度不一致或为空！", LogLevel.Error);
+                return;
             }
+            formsPlot_main.Plot.Clear();
+
+
+
+            /*
+            // 设置X轴为时间戳对应的字符串
+            formsPlot_main.Plot.Axes.Bottom.SetTicks(x, x_str);
+            formsPlot_main.Plot.Add.Scatter(x, y);
+            */
+
+            var sig1 = formsPlot_main.Plot.Add.Signal(y);
+            sig1.Axes.YAxis = formsPlot_main.Plot.Axes.Left;
+            sig1.Axes.YAxis.Label.Text = "Exp";
+            sig1.Axes.YAxis.Label.ForeColor = sig1.Color;
+
+
+            var sig2 = formsPlot_main.Plot.Add.Signal(y2);
+            sig2.Axes.YAxis = formsPlot_main.Plot.Axes.Right;
+            sig2.Axes.YAxis.Label.Text = "Exp Speed(w/Hour)";
+            sig2.Axes.YAxis.Label.ForeColor = sig2.Color;
+            sig2.MarkerShape = MarkerShape.OpenSquare;
+            sig2.MarkerStyle.Size = 20;
+
+            // 计算平均值并绘制水平线
+
+            double avg = y2.Average();
+            var avg_lineline = formsPlot_main.Plot.Add.HorizontalLine(avg);
+            avg_lineline.Color = sig2.Color;
+            avg_lineline.Axes.YAxis = formsPlot_main.Plot.Axes.Right;
+            avg_lineline.LinePattern = LinePattern.Dashed;
+            avg_lineline.LineWidth = 2;
+
+
+            // 自动调整+刷新
+            formsPlot_main.Plot.Axes.Margins();
+            formsPlot_main.Plot.Axes.AutoScale();
+            formsPlot_main.Refresh();
+
+        }
+
+        private void button_top_Click(object sender, EventArgs e)
+        {
+            // 切换 TopMost
+            this.TopMost = !this.TopMost;
+            button_top.Text = this.TopMost ? "T" : "-";
+        }
+    }
+
+    class DataPoint
+    {
+        public string TimeStr { get; set; } = string.Empty;   // 时间字符串
+        public int Value { get; set; }   // 当前采集经验
+        public double Speed { get; set; }  // 经验增速(万/小时)
+        public DataPoint(int value, long timestamp, int lastvalue, int pt)
+        {
+            Value = value;
+            Speed = ((double)(value - lastvalue)) / pt * 3600.0 / 10000.0;
+            DateTimeOffset dateTimeOffset = DateTimeOffset.FromUnixTimeSeconds(timestamp).ToLocalTime();
+            TimeStr = dateTimeOffset.ToString("HH:mm:ss");
         }
     }
 }
