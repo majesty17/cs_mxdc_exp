@@ -14,6 +14,7 @@ namespace cs_mxdc_exp
     public partial class Form1 : Form
     {
         private string app_name = "MXCD经验统计";
+        private string win_title = "冒险岛怀旧服";
 
         // 采集间隔,秒
         public const int INTVAL_SEC = 5;
@@ -27,7 +28,8 @@ namespace cs_mxdc_exp
 
         // 创建一个时间间隔为 5 秒的定时器
         PeriodicTimer timer = new PeriodicTimer(TimeSpan.FromSeconds(INTVAL_SEC));
-        CancellationTokenSource cts; // = new CancellationTokenSource();
+        
+        CancellationTokenSource? cts; // = new CancellationTokenSource();
 
 
         private enum LogLevel
@@ -42,8 +44,10 @@ namespace cs_mxdc_exp
         {
             InitializeComponent();
             this.Text = app_name;
+            button_top.Text = this.TopMost ? "T" : "-";
         }
 
+        // 日志输出函数，支持不同级别的日志
         private void Log(string message, LogLevel level = LogLevel.Info)
         {
             if (richTextBox_output.InvokeRequired)
@@ -91,15 +95,15 @@ namespace cs_mxdc_exp
 
         private void button1_Click(object sender, EventArgs e)
         {
-            Bitmap bmp = CaptureWindowByTitle("冒险岛怀旧服");
-            // Bitmap bmp = CaptureWindowByTitle("launcher3.0");
+            Bitmap bmp = CaptureWindowByTitle(win_title);
             if (bmp != null)
             {
                 pictureBox1.Image = bmp;
 
                 string imgPath_full = Path.Combine(
                     Directory.GetCurrentDirectory(),
-                        $"full_{DateTime.Now:yyyyMMdd_HHmmss}.png");
+                    $"full_{DateTime.Now:yyyyMMdd_HHmmss}.png"
+                );
                 bmp.Save(imgPath_full, System.Drawing.Imaging.ImageFormat.Png);
 
                 string res_price;
@@ -109,24 +113,13 @@ namespace cs_mxdc_exp
             }
         }
 
-
         // 1. 查找窗口句柄 API
         [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-        public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+        public static extern IntPtr FindWindow(string? lpClassName, string lpWindowName);
 
         // 2. 获取窗口尺寸矩形
         [DllImport("user32.dll")]
         private static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
-
-        // 3. 将窗口内容绘制到设备上下文 (支持后台或部分遮挡截屏)
-        [DllImport("user32.dll")]
-        public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint nFlags);
-        [DllImport("user32.dll")]
-        private static extern IntPtr GetWindowDC(IntPtr hwnd);
-        [DllImport("user32.dll")]
-        private static extern int ReleaseDC(IntPtr hwnd, IntPtr hdc);
-
-        private const uint PW_RENDERFULLCONTENT = 0x00000002;
 
         // 4. 辅助结构体：窗口位置和坐标
         [StructLayout(LayoutKind.Sequential)]
@@ -167,7 +160,6 @@ namespace cs_mxdc_exp
             Log($"窗口大小：width={windowRect.Width};height={windowRect.Height}");
             Log($"窗口左上角坐标：x={windowRect.Left};y={windowRect.Top}");
 
-            // var bmp = new Bitmap(windowRect.Width, windowRect.Height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
             var bmp = new Bitmap(120, 17);
             using (var graphics = Graphics.FromImage(bmp))
             {
@@ -192,7 +184,8 @@ namespace cs_mxdc_exp
                 Log("未能获取窗口截图，无法读取经验值！", LogLevel.Warning);
                 return -1;
             }
-            bmp= InvertImage(bmp);
+            // 反色处理
+            bmp = InvertImage(bmp);
             pictureBox1.Image = bmp;
             string imgPath = Path.Combine(
             Directory.GetCurrentDirectory(),
@@ -206,64 +199,68 @@ namespace cs_mxdc_exp
             Log($"OCR识别结果：{res_price}; 识别成功={ocr_suc_price}", LogLevel.Info);
             try
             {
-                using (JsonDocument doc = JsonDocument.Parse(res_price))
-                {
-                    JsonElement root = doc.RootElement;
-
-                    // 检查是否存在 ocr_response 数组且不为空
-                    if (root.TryGetProperty("ocr_response", out JsonElement ocrArray) && ocrArray.GetArrayLength() > 0)
-                    {
-                        // 提取数组中第一个元素的 text 字段
-                        string text = "";
-                        for(int i = 0;i< ocrArray.GetArrayLength(); i++)
-                        {
-                            text = $"{text}{ocrArray[i].GetProperty("text").GetString().Trim()}";
-                        }
-
-                        string result = string.Join("", Regex.Matches(text, @"\d"));
-
-
-                        if (result.Length > 0 && int.TryParse(result, out int ret))
-                        {
-                            return ret;
-                        }
-                        else
-                        {
-                            Log("OCR识别结果无效或无法解析为整数！", LogLevel.Warning);
-                            return -1;
-                        }
-
-                    }
-                    return -1;
-                }
+                return getExpFromOcr(res_price);
             }
             catch (Exception ex)
             {
+                Log($"解析OCR结果时发生异常：{ex.Message}", LogLevel.Error);
                 return -1;
             }
         }
 
+        private int getExpFromOcr(string j)
+        {
+            // 处理经验值，去掉非数字字符
+            using (JsonDocument doc = JsonDocument.Parse(j))
+            {
+                JsonElement root = doc.RootElement;
+
+                // 检查是否存在 ocr_response 数组且不为空
+                if (root.TryGetProperty("ocr_response", out JsonElement ocrArray) && ocrArray.GetArrayLength() > 0)
+                {
+                    // 遍历 ocr_response 数组，拼接所有 text 字段的内容
+                    string text = "";
+                    for (int i = 0; i < ocrArray.GetArrayLength(); i++)
+                    {
+                        text = $"{text}{ocrArray[i].GetProperty("text").GetString().Trim()}";
+                    }
+
+                    string result = string.Join("", Regex.Matches(text, @"\d"));
+
+
+                    if (result.Length > 0 && int.TryParse(result, out int ret))
+                    {
+                        return ret;
+                    }
+                    else
+                    {
+                        Log("OCR识别结果无效或无法解析为整数！", LogLevel.Warning);
+                        return -1;
+                    }
+
+                }
+                return -1;
+            }
+        }
 
         // 定时器主循环事件，每5秒采集一次经验数据
         private async Task DoTaskAsync()
         {
             // 采集当前经验，加入list中；
             long nowTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            int value = (int)((nowTime % 100000) * 100 + Random.Shared.Next(0, 80));
-            value = getExp();
+            int value = getExp();
             Log($"当前时间：{nowTime}, 经验值：{value}", LogLevel.Info);
 
-            // 取最后一个，然后计算跟这次的差值，计算speed
+            // 取最后一个，然后计算跟这次的差值，用来计算实时speed
             int lastvalue = value;  // 默认当前值,也就是第一个增速为0
             if (dataList.Count > 0)
             {
                 lastvalue = dataList.Values.Last().Value;
             }
 
-
             dataList.Add(nowTime, new DataPoint(value, nowTime, lastvalue, INTVAL_SEC));
 
-            // 窗口内的数据点数
+            // 窗口内的数据点数，二者取最小
             int all_len = dataList.Count;
             int time_win_len = ((int)numericUpDown_timeval.Value) * 60 / INTVAL_SEC;
             int real_len = Math.Min(all_len, time_win_len);
@@ -304,6 +301,14 @@ namespace cs_mxdc_exp
         // 按钮点击事件，开始或停止采集
         async private void button_run_Click(object sender, EventArgs e)
         {
+
+            if(CaptureWindowByTitle(win_title) ==null)
+            {
+                Log($"未能找到'{win_title}'窗口，请确保游戏已启动并登录！", LogLevel.Error);
+                return;
+            }
+
+
             if (this.isRunning)
             {
                 this.isRunning = false;
@@ -345,7 +350,7 @@ namespace cs_mxdc_exp
             }
             else
             {
-                cts.Cancel();
+                cts?.Cancel();
                 timer_refresh_clock.Stop();
             }
         }
@@ -364,8 +369,7 @@ namespace cs_mxdc_exp
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
             isRunning = false;
-            if(cts != null) 
-                cts.Cancel();
+            cts?.Cancel();
             timer_refresh_clock.Stop();
         }
 
